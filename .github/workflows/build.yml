@@ -114,6 +114,43 @@ jobs:
                   }
                   android.widget.Toast.makeText(this, "WrithDeck: opening " + uri, android.widget.Toast.LENGTH_LONG).show()
           """)
+
+          # Diagnostic: remember the last crash and show it as a Toast on the next start
+          # (also writes Documents/writhdeck/crash-log.txt when storage is writable).
+          sub(M, """        super.onCreate(savedInstanceState)
+                  enableEdgeToEdge()
+          """, """        super.onCreate(savedInstanceState)
+                  installCrashLogger()
+                  enableEdgeToEdge()
+          """)
+          sub(M, """    override fun onNewIntent(intent: Intent) {""", """    private fun installCrashLogger() {
+                  val prefs = getSharedPreferences("crashlog", android.content.Context.MODE_PRIVATE)
+                  prefs.getString("last", null)?.let { msg ->
+                      android.widget.Toast.makeText(this, "WrithDeck crashed: " + msg, android.widget.Toast.LENGTH_LONG).show()
+                      prefs.edit().remove("last").commit()
+                  }
+                  val previous = Thread.getDefaultUncaughtExceptionHandler()
+                  Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+                      try {
+                          val root: Throwable = generateSequence<Throwable>(error) { it.cause }.last()
+                          val where = error.stackTrace.plus(root.stackTrace)
+                              .filter { it.className.startsWith("com.writhdeck") }
+                              .take(3).joinToString(" < ") { it.fileName + ":" + it.lineNumber }
+                          prefs.edit().putString("last", root.javaClass.simpleName + ": " + root.message + " @ " + where).commit()
+                          try {
+                              val dir = java.io.File(
+                                  android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOCUMENTS),
+                                  "writhdeck"
+                              )
+                              dir.mkdirs()
+                              java.io.File(dir, "crash-log.txt").writeText(android.util.Log.getStackTraceString(error))
+                          } catch (_: Throwable) {}
+                      } catch (_: Throwable) {}
+                      previous?.uncaughtException(thread, error)
+                  }
+              }
+
+              override fun onNewIntent(intent: Intent) {""")
           PYEOF
           python3 patch_lollipop.py src
 

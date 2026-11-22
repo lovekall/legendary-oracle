@@ -18,5 +18,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "WrithDeck"
+rootProject.name = "legendary-oracle"
 include(":app")

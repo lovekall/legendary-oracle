@@ -19,10 +19,13 @@ jobs:
       - name: Accept Android licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
+      # Uses Gradle directly, so it doesn't need gradle-wrapper.jar
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
       - name: Build
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleFreeDebug --no-daemon
+        run: gradle assembleFreeDebug --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

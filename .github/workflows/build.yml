@@ -136,7 +136,8 @@ jobs:
                           val where = error.stackTrace.plus(root.stackTrace)
                               .filter { it.className.startsWith("com.writhdeck") }
                               .take(3).joinToString(" < ") { it.fileName + ":" + it.lineNumber }
-                          prefs.edit().putString("last", root.javaClass.simpleName + ": " + root.message + " @ " + where).commit()
+                          val top = root.stackTrace.firstOrNull()?.let { it.className.substringAfterLast('.') + "." + it.methodName + ":" + it.lineNumber } ?: "?"
+                          prefs.edit().putString("last", root.javaClass.simpleName + ": " + root.message + " [" + top + "] @ " + where).commit()
                           try {
                               val dir = java.io.File(
                                   android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOCUMENTS),
@@ -151,6 +152,18 @@ jobs:
               }
 
               override fun onNewIntent(intent: Intent) {""")
+
+
+          # Fix: on API < 26 TextView.mText is still null while the widget is being constructed, so
+          # TextView.length() throws NullPointerException. Use a null-safe length in the overrides.
+          sub(E, """    override fun sendAccessibilityEventUnchecked(event: android.view.accessibility.AccessibilityEvent) {
+                  if (length() < 10000) {""", """    // text can be null during construction on API < 26, where length() would throw an NPE.
+              private fun safeLength(): Int = (getText() as CharSequence?)?.length ?: 0
+
+              override fun sendAccessibilityEventUnchecked(event: android.view.accessibility.AccessibilityEvent) {
+                  if (safeLength() < 10000) {""")
+          sub(E, "return if (length() < 10000) super.getAutofillType()", "return if (safeLength() < 10000) super.getAutofillType()")
+          sub(E, "pageMarkOffset > length()) return", "pageMarkOffset > safeLength()) return")
           PYEOF
           python3 patch_lollipop.py src
 

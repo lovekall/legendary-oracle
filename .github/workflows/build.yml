@@ -62,6 +62,26 @@ jobs:
           """    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.3")
 
               debugImplementation("androidx.compose.ui:ui-tooling")""")
+
+          # Fix: opening a .txt from another app (file manager) landed on the home screen because the
+          # jump to the editor ran before the NavHost had installed its start destination (cold start).
+          N = "app/src/main/java/com/writhdeck/app/ui/AppNavigation.kt"
+          sub(N, "import com.writhdeck.app.WrithdeckViewModel\n",
+                 "import com.writhdeck.app.WrithdeckViewModel\nimport kotlinx.coroutines.flow.first\n")
+          sub(N, """        if (pendingExternalOpen) {
+                      vm.consumeExternalOpen()
+                      if (nav.currentDestination?.route == "browser") {
+                          nav.navigate("editor") { launchSingleTop = true }
+                      }
+                  }""", """        if (pendingExternalOpen) {
+                      // Wait until the NavHost has set its graph and start destination; on a cold
+                      // start (slow device) currentDestination is still null when this effect first runs.
+                      val entry = nav.currentBackStackEntryFlow.first()
+                      vm.consumeExternalOpen()
+                      if (entry.destination.route == "browser") {
+                          nav.navigate("editor") { launchSingleTop = true }
+                      }
+                  }""")
           PYEOF
           python3 patch_lollipop.py src
 

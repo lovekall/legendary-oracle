@@ -8,27 +8,81 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # Downloads the original WrithDeck project directly (no upload needed)
       - uses: actions/checkout@v4
+        with:
+          repository: luginf/writhdeck-android
+          ref: 842652653f4c397562b784a32729671686757c0e
+          path: src
+
+      - name: Apply Lollipop (Android 5) changes
+        run: |
+          cat > patch_lollipop.py <<'PYEOF'
+          import sys
+          root = sys.argv[1]
+
+          def sub(path, old, new):
+              p = root + "/" + path
+              s = open(p, encoding="utf-8").read()
+              assert old in s, "pattern not found in " + path + ": " + old[:60]
+              open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
+              print("patched", path)
+
+          E = "app/src/main/java/com/writhdeck/app/ui/EditorScreen.kt"
+          sub(E, """        importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {""",
+          """        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+                  }
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {""")
+          sub(E, """    override fun getAutofillType(): Int {""",
+          """    @androidx.annotation.RequiresApi(Build.VERSION_CODES.O)
+              override fun getAutofillType(): Int {""")
+          sub(E, """    var selectionChangeListener: (() -> Unit)? = null
+          """, """    var selectionChangeListener: (() -> Unit)? = null
+              var scrollYListener: ((Int) -> Unit)? = null
+
+              override fun onScrollChanged(horiz: Int, vert: Int, oldHoriz: Int, oldVert: Int) {
+                  super.onScrollChanged(horiz, vert, oldHoriz, oldVert)
+                  scrollYListener?.invoke(vert)
+              }
+          """)
+          sub(E, """setOnScrollChangeListener { _, _, scrollY, _, _ ->""",
+                 """scrollYListener = { scrollY ->""")
+          sub("app/src/main/java/com/writhdeck/app/StateStore.kt",
+              "state.daily.getOrDefault(path, emptyMap())",
+              "(state.daily[path] ?: emptyMap())")
+          G = "app/build.gradle.kts"
+          sub(G, "minSdk = 26", "minSdk = 21")
+          sub(G, """    compileOptions {
+                  sourceCompatibility""", """    compileOptions {
+                  isCoreLibraryDesugaringEnabled = true
+                  sourceCompatibility""")
+          sub(G, """    debugImplementation("androidx.compose.ui:ui-tooling")""",
+          """    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.3")
+
+              debugImplementation("androidx.compose.ui:ui-tooling")""")
+          PYEOF
+          python3 patch_lollipop.py src
 
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
-      # The Android SDK is already installed on GitHub's servers; just accept its licenses.
       - name: Accept Android licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
-      # Uses Gradle directly, so it doesn't need gradle-wrapper.jar
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.9
 
       - name: Build
+        working-directory: src
         run: gradle assembleFreeDebug --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: legendary-oracle-apk
-          path: app/build/outputs/apk/**/*.apk
+          name: writhdeck-apk
+          path: src/app/build/outputs/apk/**/*.apk

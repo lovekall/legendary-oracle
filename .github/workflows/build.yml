@@ -76,6 +76,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.9
+          validate-wrappers: false   # the project's wrapper jar isn't used; we run Gradle directly
 
       - name: Build
         working-directory: src

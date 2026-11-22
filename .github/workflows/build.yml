@@ -82,6 +82,38 @@ jobs:
                           nav.navigate("editor") { launchSingleTop = true }
                       }
                   }""")
+
+          # Fix: opening a file from another app raced with initApp() (config/state loading) on slow
+          # devices, and any error was swallowed silently. Wait for init, and show errors as a Toast.
+          V = "app/src/main/java/com/writhdeck/app/WrithdeckViewModel.kt"
+          sub(V, "import kotlinx.coroutines.flow.asStateFlow\n",
+                 "import kotlinx.coroutines.flow.asStateFlow\nimport kotlinx.coroutines.flow.first\nimport kotlinx.coroutines.CoroutineExceptionHandler\n")
+          sub(V, """    fun openExternalContent(uri: Uri, contentResolver: ContentResolver, canWrite: Boolean) {
+                  viewModelScope.launch {
+                      _isScratchpad.value = false
+          """, """    fun openExternalContent(uri: Uri, contentResolver: ContentResolver, canWrite: Boolean) {
+                  val errHandler = CoroutineExceptionHandler { _, e ->
+                      android.os.Handler(android.os.Looper.getMainLooper()).post {
+                          android.widget.Toast.makeText(
+                              getApplication<Application>(),
+                              "Could not open file: " + e.javaClass.simpleName + ": " + e.message,
+                              android.widget.Toast.LENGTH_LONG
+                          ).show()
+                      }
+                  }
+                  viewModelScope.launch(errHandler) {
+                      // Wait until initApp() has loaded config/state so it can't overwrite what we set.
+                      _engineReady.first { it }
+                      _isScratchpad.value = false
+          """)
+          M = "app/src/main/java/com/writhdeck/app/MainActivity.kt"
+          sub(M, """        val uri = intent.data ?: return
+          """, """        val uri = intent.data ?: run {
+                      android.widget.Toast.makeText(this, "WrithDeck: no file in request", android.widget.Toast.LENGTH_LONG).show()
+                      return
+                  }
+                  android.widget.Toast.makeText(this, "WrithDeck: opening " + uri, android.widget.Toast.LENGTH_LONG).show()
+          """)
           PYEOF
           python3 patch_lollipop.py src
 
@@ -92,6 +124,12 @@ jobs:
 
       - name: Accept Android licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      # Same signing key on every build, so each new APK installs over the old one
+      - name: Use fixed signing key
+        run: |
+          mkdir -p ~/.android
+          echo 'MIIKZgIBAzCCChAGCSqGSIb3DQEHAaCCCgEEggn9MIIJ+TCCBcAGCSqGSIb3DQEHAaCCBbEEggWtMIIFqTCCBaUGCyqGSIb3DQEMCgECoIIFQDCCBTwwZgYJKoZIhvcNAQUNMFkwOAYJKoZIhvcNAQUMMCsEFNKo2OlflMSrxBp7uFF9/csUwuK0AgInEAIBIDAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBKgQQIsb2O8imSKhTrIbpMg0wzgSCBNDsHeeoDd+H0Li97vvBPPz63NQ5LNKL1DZ30W75YM8Pohbyd4HBj4Wokv7SllTIEAKias+ERnBRtPc+qUAf1tbLJXXNpavqkW/wxLvzVRJ9kBQ0SJyFtlhfY1qUKNPzG4VdU9A5NS9l3MNOEwe6I+UO//urQDTNDpAPJ3px7NxDoG3RUsIPCj6DGQYyNgJAVu56FRR8+9BrE3fAm8iAEN72TE1XLIJiGHy2zg8AfeVmT4HYjGYqbFruutgKxc94198/CwKMORiKFGHUfvP7xXw+Avy6Cw20I4684z0A9SDlmZA3mq0LmMPGX5NSC0dXeJHbgHGqAQAMYnXiAf19L8XW1Wc1PEKEYx2dILtkO+7bS9gzzKqoaOMLGhONmkm/qM7wev+3CbpuB4CZjbAjugHRkAX1fM88vSdcCWMrG+ppmK7TbJjM4EOYgOWJcnBvf1wljMYJGdxAXTUUs7i/Rnsx9M0hDIQ8XViRt5jrF6rEuZNasiRlc1mej7g5ZzOWXKa2qRkrtm0j7/p/+UK2MvbWzDmrK3RrQ5VKfT+qLgtDrVKUl6vz5I6kgoTFcu84CxNCTlGa0VF7s9Ch5hLp2LmVvcDd9KVULRdOKYNN/EgQFjq2v6jJNmnf6w/+RoiUu+PbWbiEpxfrY0bdZkdRRD5/+PbPHS8sntTcsP7Ix5uPIrhZ5RGnEbaX8/eXf0tPioNbljPDS/4I421NpJ4HI5384ICR6mHxxnapaZJ3bhiPtrqGAYpxSqYVGi5WQOGGoKopmql6jjxxJ4cR0Mb9UjIPsuVBDzZf5v392IBs5e3/geJaarj4ftJzvyZsMCZS+NmgoAL1d46zQuw40wAjj0UGTthEfabB1qeNeCQjaDzSuPDg9FHHI3WgL6/UCr7WKniqCkaTjVBYGzBoqsoD29DSBIPZUb0UPP2+JjO1B0GIY1rB7xZ9s9X9HGhfX6U9uezJ+FyERVqyoNHKNNAyw5Pp+kQrGpOVFpkorQ5weNjwySkpj5tGPBL62iluxgzdY+oW/EseUiLQuYdIyTBhT4tSbcH5RrmNe0YZT+caik8HlXq6zKr7a6CZJFmzUaZL9zaawQKMDNbzDwjmLvvPgsXpKvBF0imj2p8Fn+1VIaUH8oSfggM/suo49jsVAGooOEreFN+g7zI0EOatPweWsJ1JMV9WzRNp7FedIcBDeMivet/OhSU9qr7GyBvSoXBxDTkRZ73qe7ryeZAhettyr0uQewPL6Cxep34Ad5PzT6pk3y2PcOMsHNoMtLPOxdaAMO1zaaeO8/JxadHFwvcTV+vFITUJ2MS/zbNoMfAocJRsc44xpRMB7SUwgh8ijYK7p0wjcaq6Rz9rY6pFKzwnkPt8FqujGWLNVNXoYhQbIQE/5Z1dZShWEo02syWaAwkMzc45IJgcy4y+9Wi50rxX5yOP2RgQfYkIlILJu7+I/LknjPONpGln1fl+XGFwSDZJBNsYJ9Qs5JU4AG8A/n0WcVgcRFxVsBYwG/ZxOmzu7CyMC+coz7Cf4Oo8yL/0BhqbXSf3vpBQtmY/bfZG/uZRyZeyxjaN0CEdAESr8yNlpEBMHrDOpSbl8VD1E8G03u0dpN2yYZSa4jmpoHF7hBoDrRYJU8zddZkMBDMUoAOpOwDD+TFSMC0GCSqGSIb3DQEJFDEgHh4AYQBuAGQAcgBvAGkAZABkAGUAYgB1AGcAawBlAHkwIQYJKoZIhvcNAQkVMRQEElRpbWUgMTc5NTM1OTU3NTAwNjCCBDEGCSqGSIb3DQEHBqCCBCIwggQeAgEAMIIEFwYJKoZIhvcNAQcBMGYGCSqGSIb3DQEFDTBZMDgGCSqGSIb3DQEFDDArBBTe1iH0T68tWfVXld0DQ0dQXmzDiwICJxACASAwDAYIKoZIhvcNAgkFADAdBglghkgBZQMEASoEEIbCR85D8Vjkian/5XdOVfCAggOgP/L30e+/k4UXRd2g+DvQuSDNHZOTjTJlK5U0eqdLYGxift2JKYzivSdAHX1TBvp/ApYHZ+7FiIcuv56UgqoNQBn2Tg1bszaj55jYcQZr1HH0SXI+AA+0cqHg9L0B5+XO7SpZc4FGfGMLEI3TERafIVhj4jrY8PdQ4qUoG1Wfl9F5fk1X+Iu2paW7awpYOyXrYL5UeerPJJ9ziaLGElu9XuVzVW3funOSJCSfF75+0j0fh6Z1lrb7sCDn4KsYtPW689GIDhEcmd2h7H0iBkTSGcYo6oa5SN5Frl9ROR7C/ySLVvNkO/13KRZzp9qzzYYGARxt9mZlK9gp753mWzon3GyHrbhWHAzM24S67GY6sZGc6UsjxRoF8uxzY00PY/1f63ch6mRceB2cXQDTtFt+LuyLe2MZQhQq33HZB54TArp8PUScdLS+a8qOmZmpp0X8gvA1gCssqLJ4K2yOAWb8cTBbW3rvEaBypBTQaxYIJDECNXFK70bFW+75w0jEMwq3/m8zQu8owGscVwnezBUbydwwUj+OsvAN5SDHje108/kDNeTPkAoXGTTKzMSU+syfDIU0xa1YMVGtdCyRC7tit2JShAK1Nrqxpi0Lypz51K+ybs4uGbOBRRnKghFBejijUq1vykRQdHlHa7Or/vAMBYbJe0zdPAw5EvAU5/Vumsp/ayDS8JEFhvqLLBGPuuwKemsUTMbnGh8G01Vkk3N6vtpN/NY1HX4Ze3QJt2YUnDk7AhSyuw9k837Pu+2s8J8+f61Q8HCtzkDwhwJhXu7vkCnZNlz58jffztjsBtWy25rwoAit3REwGzlqQ4KryuCVM9p0FBspAqu/9kc05lRNswnLke9CRt+S13zlp5v3oXau4vTyeWqtf6WXnYOIgonYvWG834k2HjrHuBCZkvSvs/G6PJbIhLjOOXXOh07hgvWxtaccqWd7gX+tAH9/oe250IDtsKcF+yKxwJ1/u9Po1/ZgGnUJiLy6PBegD2q+/hChwnSyG2QAgkbz+HG/BgRZW2U23ekrJXr92xUv561E1puwip3um31fa6VJoe+9wLKJGHAWeB2cS6rWuoomTElyvcZgTv/8mYU2gV+npF230VNE31xWn2/rdsdh1FQpg9w5YpgElkYzIJT1ZrpZqxws8WX1wnBPVFCnB3QDzGLpuj/THRZWEeXgcNNj4xbDX2ui4vd9pU/rwIujnIgf2b5gy2h9YO8qwbi4ihr+l6IS1DBNMDEwDQYJYIZIAWUDBAIBBQAEIILVs5WdvLRfFw1CMyrb/cdZ8ifkk5VtfCstgIvt9Ft2BBS27rHulWWFi+hzVllwW2oFrzAlzwICJxA=' | base64 -d > ~/.android/debug.keystore
 
       - uses: gradle/actions/setup-gradle@v4
         with:

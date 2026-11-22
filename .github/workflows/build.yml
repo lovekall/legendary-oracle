@@ -18,80 +18,157 @@ jobs:
       - name: Apply Lollipop (Android 5) changes
         run: |
           cat > patch_lollipop.py <<'PYEOF'
+          import re
           import sys
+
           root = sys.argv[1]
 
-          def sub(path, old, new):
+          def sub(path, old, new, required=True):
               p = root + "/" + path
               s = open(p, encoding="utf-8").read()
-              assert old in s, "pattern not found in " + path + ": " + old[:60]
+              if old not in s:
+                  msg = "pattern not found in " + path + ": " + old[:60]
+                  if required:
+                      raise AssertionError(msg)
+                  print("SKIPPED:", msg)
+                  return
               open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
               print("patched", path)
 
           E = "app/src/main/java/com/writhdeck/app/ui/EditorScreen.kt"
-          sub(E, """        importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+          sub(
+              E,
+              """        importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {""",
-          """        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+              """        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                       importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
                   }
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {""")
-          sub(E, """    override fun getAutofillType(): Int {""",
-          """    @androidx.annotation.RequiresApi(Build.VERSION_CODES.O)
-              override fun getAutofillType(): Int {""")
-          sub(E, """    var selectionChangeListener: (() -> Unit)? = null
-          """, """    var selectionChangeListener: (() -> Unit)? = null
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {""",
+              required=False,
+          )
+          sub(
+              E,
+              """    override fun getAutofillType(): Int {""",
+              """    @androidx.annotation.RequiresApi(Build.VERSION_CODES.O)
+              override fun getAutofillType(): Int {""",
+              required=False,
+          )
+          sub(
+              E,
+              """    var selectionChangeListener: (() -> Unit)? = null
+          """,
+              """    var selectionChangeListener: (() -> Unit)? = null
               var scrollYListener: ((Int) -> Unit)? = null
 
               override fun onScrollChanged(horiz: Int, vert: Int, oldHoriz: Int, oldVert: Int) {
                   super.onScrollChanged(horiz, vert, oldHoriz, oldVert)
                   scrollYListener?.invoke(vert)
               }
-          """)
-          sub(E, """setOnScrollChangeListener { _, _, scrollY, _, _ ->""",
-                 """scrollYListener = { scrollY ->""")
-          sub("app/src/main/java/com/writhdeck/app/StateStore.kt",
+          """,
+              required=False,
+          )
+          sub(
+              E,
+              """setOnScrollChangeListener { _, _, scrollY, _, _ ->""",
+              """scrollYListener = { scrollY ->""",
+              required=False,
+          )
+
+          # Guard Android 6.0 (API 23+) insertion action mode callback calls so Android 5.1 (API 22)
+          # does not throw NoSuchMethodError when FlingEditText is created.
+          editor_path = root + "/" + E
+          editor_src = open(editor_path, encoding="utf-8").read()
+
+          # Guard property assignment: customInsertionActionModeCallback = ...
+          editor_src, prop_count = re.subn(
+              r"(?m)^([ \t]*)(customInsertionActionModeCallback\s*=\s*[^\n]+)$",
+              r"\1if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) { \2 }",
+              editor_src,
+          )
+          # Guard method call: setCustomInsertionActionModeCallback(...)
+          editor_src, call_count = re.subn(
+              r"(?m)^([ \t]*)(setCustomInsertionActionModeCallback\([^\n]*\))$",
+              r"\1if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) { \2 }",
+              editor_src,
+          )
+          # If overridden inside FlingEditText, annotate with @RequiresApi(Build.VERSION_CODES.M)
+          editor_src, override_count = re.subn(
+              r"(?m)^([ \t]*)(override fun setCustomInsertionActionModeCallback\b)",
+              r"\1@androidx.annotation.RequiresApi(Build.VERSION_CODES.M)\n\1\2",
+              editor_src,
+          )
+          open(editor_path, "w", encoding="utf-8").write(editor_src)
+          print(
+              f"patched insertion callback in {E}: "
+              f"prop={prop_count}, call={call_count}, override={override_count}"
+          )
+
+          sub(
+              "app/src/main/java/com/writhdeck/app/StateStore.kt",
               "state.daily.getOrDefault(path, emptyMap())",
-              "(state.daily[path] ?: emptyMap())")
+              "(state.daily[path] ?: emptyMap())",
+              required=False,
+          )
+
           G = "app/build.gradle.kts"
-          sub(G, "minSdk = 26", "minSdk = 21")
-          sub(G, """    compileOptions {
-                  sourceCompatibility""", """    compileOptions {
+          sub(G, "minSdk = 26", "minSdk = 21", required=False)
+          sub(
+              G,
+              """    compileOptions {
+                  sourceCompatibility""",
+              """    compileOptions {
                   isCoreLibraryDesugaringEnabled = true
-                  sourceCompatibility""")
-          sub(G, """    debugImplementation("androidx.compose.ui:ui-tooling")""",
-          """    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.3")
+                  sourceCompatibility""",
+              required=False,
+          )
+          sub(
+              G,
+              """    debugImplementation("androidx.compose.ui:ui-tooling")""",
+              """    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.3")
 
-              debugImplementation("androidx.compose.ui:ui-tooling")""")
+              debugImplementation("androidx.compose.ui:ui-tooling")""",
+              required=False,
+          )
 
-          # Fix: opening a .txt from another app (file manager) landed on the home screen because the
-          # jump to the editor ran before the NavHost had installed its start destination (cold start).
           N = "app/src/main/java/com/writhdeck/app/ui/AppNavigation.kt"
-          sub(N, "import com.writhdeck.app.WrithdeckViewModel\n",
-                 "import com.writhdeck.app.WrithdeckViewModel\nimport kotlinx.coroutines.flow.first\n")
-          sub(N, """        if (pendingExternalOpen) {
+          sub(
+              N,
+              "import com.writhdeck.app.WrithdeckViewModel\n",
+              "import com.writhdeck.app.WrithdeckViewModel\nimport kotlinx.coroutines.flow.first\n",
+              required=False,
+          )
+          sub(
+              N,
+              """        if (pendingExternalOpen) {
                       vm.consumeExternalOpen()
                       if (nav.currentDestination?.route == "browser") {
                           nav.navigate("editor") { launchSingleTop = true }
                       }
-                  }""", """        if (pendingExternalOpen) {
-                      // Wait until the NavHost has set its graph and start destination; on a cold
-                      // start (slow device) currentDestination is still null when this effect first runs.
+                  }""",
+              """        if (pendingExternalOpen) {
                       val entry = nav.currentBackStackEntryFlow.first()
                       vm.consumeExternalOpen()
                       if (entry.destination.route == "browser") {
                           nav.navigate("editor") { launchSingleTop = true }
                       }
-                  }""")
+                  }""",
+              required=False,
+          )
 
-          # Fix: opening a file from another app raced with initApp() (config/state loading) on slow
-          # devices, and any error was swallowed silently. Wait for init, and show errors as a Toast.
           V = "app/src/main/java/com/writhdeck/app/WrithdeckViewModel.kt"
-          sub(V, "import kotlinx.coroutines.flow.asStateFlow\n",
-                 "import kotlinx.coroutines.flow.asStateFlow\nimport kotlinx.coroutines.flow.first\nimport kotlinx.coroutines.CoroutineExceptionHandler\n")
-          sub(V, """    fun openExternalContent(uri: Uri, contentResolver: ContentResolver, canWrite: Boolean) {
+          sub(
+              V,
+              "import kotlinx.coroutines.flow.asStateFlow\n",
+              "import kotlinx.coroutines.flow.asStateFlow\nimport kotlinx.coroutines.flow.first\nimport kotlinx.coroutines.CoroutineExceptionHandler\n",
+              required=False,
+          )
+          sub(
+              V,
+              """    fun openExternalContent(uri: Uri, contentResolver: ContentResolver, canWrite: Boolean) {
                   viewModelScope.launch {
                       _isScratchpad.value = false
-          """, """    fun openExternalContent(uri: Uri, contentResolver: ContentResolver, canWrite: Boolean) {
+          """,
+              """    fun openExternalContent(uri: Uri, contentResolver: ContentResolver, canWrite: Boolean) {
                   val errHandler = CoroutineExceptionHandler { _, e ->
                       android.os.Handler(android.os.Looper.getMainLooper()).post {
                           android.widget.Toast.makeText(
@@ -102,28 +179,40 @@ jobs:
                       }
                   }
                   viewModelScope.launch(errHandler) {
-                      // Wait until initApp() has loaded config/state so it can't overwrite what we set.
                       _engineReady.first { it }
                       _isScratchpad.value = false
-          """)
+          """,
+              required=False,
+          )
+
           M = "app/src/main/java/com/writhdeck/app/MainActivity.kt"
-          sub(M, """        val uri = intent.data ?: return
-          """, """        val uri = intent.data ?: run {
+          sub(
+              M,
+              """        val uri = intent.data ?: return
+          """,
+              """        val uri = intent.data ?: run {
                       android.widget.Toast.makeText(this, "WrithDeck: no file in request", android.widget.Toast.LENGTH_LONG).show()
                       return
                   }
                   android.widget.Toast.makeText(this, "WrithDeck: opening " + uri, android.widget.Toast.LENGTH_LONG).show()
-          """)
-
-          # Diagnostic: remember the last crash and show it as a Toast on the next start
-          # (also writes Documents/writhdeck/crash-log.txt when storage is writable).
-          sub(M, """        super.onCreate(savedInstanceState)
+          """,
+              required=False,
+          )
+          sub(
+              M,
+              """        super.onCreate(savedInstanceState)
                   enableEdgeToEdge()
-          """, """        super.onCreate(savedInstanceState)
+          """,
+              """        super.onCreate(savedInstanceState)
                   installCrashLogger()
                   enableEdgeToEdge()
-          """)
-          sub(M, """    override fun onNewIntent(intent: Intent) {""", """    private fun installCrashLogger() {
+          """,
+              required=False,
+          )
+          sub(
+              M,
+              """    override fun onNewIntent(intent: Intent) {""",
+              """    private fun installCrashLogger() {
                   val prefs = getSharedPreferences("crashlog", android.content.Context.MODE_PRIVATE)
                   prefs.getString("last", null)?.let { msg ->
                       android.widget.Toast.makeText(this, "WrithDeck crashed: " + msg, android.widget.Toast.LENGTH_LONG).show()
@@ -151,19 +240,32 @@ jobs:
                   }
               }
 
-              override fun onNewIntent(intent: Intent) {""")
+              override fun onNewIntent(intent: Intent) {""",
+              required=False,
+          )
 
-
-          # Fix: on API < 26 TextView.mText is still null while the widget is being constructed, so
-          # TextView.length() throws NullPointerException. Use a null-safe length in the overrides.
-          sub(E, """    override fun sendAccessibilityEventUnchecked(event: android.view.accessibility.AccessibilityEvent) {
-                  if (length() < 10000) {""", """    // text can be null during construction on API < 26, where length() would throw an NPE.
-              private fun safeLength(): Int = (getText() as CharSequence?)?.length ?: 0
+          sub(
+              E,
+              """    override fun sendAccessibilityEventUnchecked(event: android.view.accessibility.AccessibilityEvent) {
+                  if (length() < 10000) {""",
+              """    private fun safeLength(): Int = (getText() as CharSequence?)?.length ?: 0
 
               override fun sendAccessibilityEventUnchecked(event: android.view.accessibility.AccessibilityEvent) {
-                  if (safeLength() < 10000) {""")
-          sub(E, "return if (length() < 10000) super.getAutofillType()", "return if (safeLength() < 10000) super.getAutofillType()")
-          sub(E, "pageMarkOffset > length()) return", "pageMarkOffset > safeLength()) return")
+                  if (safeLength() < 10000) {""",
+              required=False,
+          )
+          sub(
+              E,
+              "return if (length() < 10000) super.getAutofillType()",
+              "return if (safeLength() < 10000) super.getAutofillType()",
+              required=False,
+          )
+          sub(
+              E,
+              "pageMarkOffset > length()) return",
+              "pageMarkOffset > safeLength()) return",
+              required=False,
+          )
           PYEOF
           python3 patch_lollipop.py src
 
